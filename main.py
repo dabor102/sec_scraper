@@ -81,7 +81,7 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
 
     df = pd.DataFrame(all_data_points)
     df = df.rename(columns={'period_end_date': 'filing_period_end_date', 'units': 'unit'})
-    final_cols = ['symbol', 'form_type', 'date_filed', 'filing_period_end_date', 'fiscal_period', 'table_description', 'category', 'metric', 'value', 'unit']
+    final_cols = ['symbol', 'form_type', 'date_filed', 'filing_period_end_date', 'fiscal_period', 'table_description', 'table_number', 'href', 'category', 'metric', 'value', 'unit']
     df = df.reindex(columns=[col for col in final_cols if col in df.columns])
 
     logging.info(f"Total data points extracted: {len(df)}")
@@ -91,8 +91,8 @@ def main():
     """Main function to configure and initiate scraping."""
     symbol = 'SNOW'
     start_year = 2025 
-    end_year = 2023
-    form_groups = ['Annual Reports', 'Quarterly Reports']
+    end_year = 2019
+    form_groups = ['Quarterly Reports'] #'Annual Reports',  
     filing_urls_to_scrape = [] 
 
     final_df = scrape_sec_filings(

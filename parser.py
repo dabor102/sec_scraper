@@ -57,14 +57,21 @@ def parse_table_headers(table):
         if len(set(years_found)) > 1:
             return sorted(list(set(years_found)), reverse=True)
     return []
-
-def scrape_data_from_tables(tables, context, all_data_points):
+def scrape_data_from_tables(tables, context, all_data_points, table_map, toc_href=None):
     """
     Extracts financial data from a list of tables.
     """
-    table_counter = context['table_counter']
     for table in tables:
-        table_counter[0] += 1
+        # Find the table's number and ID from the global map
+        table_info = None
+        for tbl, info in table_map.items():
+            if str(tbl) == str(table):
+                table_info = info
+                break
+
+        if not table_info:
+            continue
+
         fiscal_periods = parse_table_headers(table)
         num_periods = len(fiscal_periods)
         if num_periods == 0:
@@ -97,7 +104,10 @@ def scrape_data_from_tables(tables, context, all_data_points):
                             "value": value,
                             "units": units,
                             "fiscal_period": period,
-                            "category": current_category
+                            "category": current_category,
+                            "table_number": table_info['number'],
+                            # Use ToC href if available, otherwise use the table's own ID
+                            "href": toc_href if toc_href else f"#{table_info['id']}"
                         })
 
 # ==============================================================================
@@ -188,7 +198,7 @@ def get_section_content_between_anchors(start_tag, end_tag):
     # Re-parse the collected tags into a new, self-contained soup object for isolated searching.
     return BeautifulSoup("".join(str(t) for t in content_tags), 'html.parser')
 
-def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_points, status_report):
+def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_points, status_report, table_map):
     """
     Orchestrates the precise, ToC-guided scraping workflow.
     """
@@ -203,6 +213,8 @@ def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_p
 
     for statement_type, toc_item in mapped_statements.items():
         start_tag = toc_item['anchor_tag']
+        # Capture the href from the ToC item
+        toc_anchor_href = toc_item['anchor_href']
         current_pos = tag_to_index_pos.get(start_tag)
 
         end_tag = None
@@ -215,7 +227,8 @@ def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_p
         tables_in_section = section_soup.find_all('table')
         if tables_in_section:
             context = {**base_context, "table_description": statement_type.replace('_', ' ').title()}
-            scrape_data_from_tables(tables_in_section, context, all_data_points)
+            # Pass the toc_anchor_href to the scraping function
+            scrape_data_from_tables(tables_in_section, context, all_data_points, table_map, toc_href=toc_anchor_href)
             status_report['statements'][statement_type] = 'Found (ToC-Guided)'
         else:
             logging.warning(f"Found section for '{statement_type}' but no tables within it.")
@@ -226,7 +239,7 @@ def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_p
 # SECTION 3: FALLBACK SCRAPING LOGIC
 # ==============================================================================
 
-def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict, all_data_points, status_report):
+def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict, all_data_points, status_report, table_map):
     """
     Scans all tables in the document if the ToC method fails.
     """
@@ -266,7 +279,8 @@ def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict
 
     for s_type, table in found_statements.items():
         context = {**base_context, "table_description": s_type.replace('_', ' ').title()}
-        scrape_data_from_tables([table], context, all_data_points)
+        # For fallback, toc_href remains None, so the function will generate the href from the table ID
+        scrape_data_from_tables([table], context, all_data_points, table_map)
         status_report['statements'][s_type] = 'Found (Fallback)'
 
 # ==============================================================================
@@ -308,13 +322,20 @@ def process_single_filing(filing_info, terms_dict):
             logging.warning(f"-> Skipping {os.path.basename(filepath)}: Could not find period end date.")
             return [], status_report
         
+        # --- TABLE NUMBERING AND ID ASSIGNMENT ---
+        all_tables = soup.find_all('table')
+        table_map = {}
+        for i, table in enumerate(all_tables):
+            table_id = f"table-{i+1}"
+            table['id'] = table_id
+            table_map[table] = {"number": i + 1, "id": table_id}
+
         file_data_points = []
         base_context = {
             'symbol': filing_meta.get('symbol'),
             'form_type': filing_meta.get('form_type'),
             'date_filed': filing_meta.get('date_filed'),
             'period_end_date': period_end_date,
-            'table_counter': [0]
         }
         
         # --- ROUTING LOGIC ---
@@ -322,11 +343,11 @@ def process_single_filing(filing_info, terms_dict):
         
         guided_scrape_successful = False
         if filing_index:
-            guided_scrape_successful = process_guided_scrape(filing_index, soup, base_context, terms_dict, file_data_points, status_report)
+            guided_scrape_successful = process_guided_scrape(filing_index, soup, base_context, terms_dict, file_data_points, status_report, table_map)
         
         # If the ToC path was not attempted or did not succeed, use the fallback method
         if not guided_scrape_successful:
-            find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict, file_data_points, status_report)
+            find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict, file_data_points, status_report, table_map)
 
         logging.info(f"[PID {os.getpid()}] Finished {os.path.basename(filepath)}, found {len(file_data_points)} data points.")
         return file_data_points, status_report
