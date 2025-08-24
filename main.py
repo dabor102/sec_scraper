@@ -91,14 +91,14 @@ def main():
     """Main function to configure and initiate scraping."""
     symbol = 'SNOW'
     start_year = 2025 
-    end_year = 2019
+    end_year = 2024
     form_groups = ['Quarterly Reports'] #'Annual Reports',  
     filing_urls_to_scrape = [] 
 
     final_df = scrape_sec_filings(
         symbol=symbol, 
         start_year=start_year, 
-        end_year=end_year, 
+        end_year=end_year,
         form_groups=form_groups,
         filing_urls=filing_urls_to_scrape,
         save_dir=f"sec_filings_{symbol.upper()}"

@@ -1,0 +1,283 @@
+{
+    "INCOME_STATEMENT": {
+        "Revenue / Sales": [
+            "net revenue",
+            "revenue",
+            "sales",
+            "total revenue",
+            "net sales",
+            "total net sales",
+            "net sales to related party"
+        ],
+        "Cost of Goods Sold (COGS)": [
+            "cost of sales",
+            "cost of goods sold",
+            "total cost of sales",
+            "cogs"
+        ],
+        "Gross Profit": [
+            "gross profit",
+            "gross margin"
+        ],
+        "Operating Expenses": [
+            "research and development",
+            "marketing, general and administrative",
+            "total operating expenses",
+            "restructuring charges",
+            "amortization of acquisition-related intangibles",
+            "selling, general and administrative",
+            "restructuring and other special charges",
+            "restructuring and other special charges, net",
+            "amortization of acquired intangible assets",
+            "amortization of acquired intangible assets and integration charges",
+            "goodwill impairment charge",
+            "impairment of goodwill and acquired intangible assets",
+            "in-process research and development",
+            "legal settlement"
+        ],
+        "Operating Income (EBIT)": [
+            "operating income",
+            "operating income (loss)",
+            "ebit",
+            "ebitda",
+            "operating loss"
+        ],
+        "Non-Operating Income/Expense & Other": [
+            "licensing gain",
+            "other income (expense), net",
+            "equity income in investee",
+            "interest income",
+            "interest and other income, net",
+            "interest and other income (expense), net",
+            "other expense, net",
+            "dilution gain in investee",
+            "equity in income (loss) of atmp jv",
+            "equity in net income (loss) of joint venture",
+            "equity in net income of joint venture",
+            "equity income (loss) and dilution gain in investee, net",
+            "equity loss in investee"
+        ],
+        "Interest Expense": [
+            "interest expense"
+        ],
+        "Pre-Tax Income": [
+            "income before taxes",
+            "income before income taxes and equity income",
+            "income (loss) before income taxes and equity income",
+            "loss before income taxes"
+        ],
+        "Tax Expense": [
+            "tax expense",
+            "income tax provision (benefit)",
+            "benefit for income taxes",
+            "income tax benefit",
+            "income tax provision",
+            "provision (benefit) for income taxes",
+            "provision for income taxes"
+        ],
+        "Net Income": [
+            "net income",
+            "profit",
+            "income (loss) from continuing operations",
+            "net loss",
+            "minority interest in consolidated subsidiaries"
+        ],
+        "EPS": [
+            "earnings per share",
+            "eps",
+            "earnings (loss) per share",
+            "net loss per share"
+        ]
+    },
+    "BALANCE_SHEET_STATEMENT": {
+        "Total Assets": [
+            "assets",
+            "total assets"
+        ],
+        "Current Assets": {
+            "root": [
+                "current assets",
+                "total current assets"
+            ],
+            "Cash and Cash Equivalents": [
+                "cash and cash equivalents",
+                "marketable securities"
+            ],
+            "Accounts Receivable": [
+                "accounts receivable",
+                "receivables from related parties",
+                "allowance for doubtful accounts",
+                "prepayment and other receivables - related parties"
+            ],
+            "Inventory": [
+                "inventories",
+                "finished goods",
+                "raw materials",
+                "work-in-process"
+            ],
+            "Other Current Assets": [
+                "prepaid expenses",
+                "prepaid expenses and other current assets",
+                "other current assets"
+            ]
+        },
+        "Non-Current Assets": {
+            "root": [
+                "non-current assets"
+            ],
+            "Property, Plant, Equipment": [
+                "property and equipment",
+                "property and equipment, net",
+                "property, plant and equipment",
+                "property, plant and equipment, net"
+            ],
+            "Intangible Assets": [
+                "goodwill",
+                "acquisition-related intangibles",
+                "acquisition-related intangibles, net",
+                "acquisition related intangible assets, net"
+            ],
+            "Other Non-Current Assets": [
+                "operating lease right-of-use assets",
+                "investment: equity method",
+                "deferred tax assets",
+                "deferred tax assets, net",
+                "other non-current assets",
+                "investment in globalfoundries",
+                "other assets"
+            ]
+        },
+        "Total Liabilities": [
+            "liabilities",
+            "total liabilities"
+        ],
+        "Current Liabilities": {
+            "root": [
+                "current liabilities"
+            ],
+            "Accounts Payable": [
+                "accounts payable",
+                "accrued liabilities"
+            ],
+            "Short-Term Debt": [
+                "short-term debt"
+            ]
+        },
+        "Non-Current Liabilities": {
+            "root": [
+                "non-current liabilities",
+                "deferred tax liabilities"
+            ],
+            "Long-Term Debt": [
+                "long-term debt"
+            ]
+        },
+        "Equity": {
+            "root": [
+                "shareholders' equity",
+                "total equity",
+                "liabilities and stockholders’ equity",
+                "stockholders’ equity"
+            ],
+            "Common Stock": [
+                "common stock"
+            ],
+            "Retained Earnings": [
+                "retained earnings"
+            ]
+        }
+    },
+    "CASH_FLOW_STATEMENT": {
+        "Cash Flows from Operating Activities": {
+            "root": [
+                "net cash from operating activities",
+                "net cash used in operating activities"
+            ],
+            "Net Income (starting point)": [
+                "net income",
+                "net loss"
+            ],
+            "Adjustments": [
+                "adjustments to reconcile net income to net cash provided by operating activities",
+                "changes in operating assets and liabilities",
+                "accounts receivable",
+                "inventories",
+                "prepaid expenses",
+                "accounts payable",
+                "accrued liabilities",
+                "depreciation",
+                "amortization",
+                "accrued and other liabilities",
+                "allowance for doubtful accounts",
+                "amortization of debt discount and issuance costs",
+                "amortization of foreign grant",
+                "amortization of inventory fair value adjustment",
+                "amortization of operating lease right-of-use assets",
+                "compensation recognized under employee stock plans",
+                "deferred income taxes",
+                "employee stock plans",
+                "equity in net loss",
+                "foreign grant and subsidy income",
+                "goodwill impairment charge",
+                "impairment of goodwill",
+                "inventory loss at contract manufacturer",
+                "minority interest",
+                "non-cash interest expense",
+                "other assets",
+                "other than temporary impairment on marketable securities",
+                "payable to globalfoundries",
+                "payables to related parties",
+                "prepaid expenses and other assets",
+                "prepaid expenses and other current assets",
+                "provision for doubtful accounts",
+                "receivables from related parties",
+                "recognition of deferred gain on sale of building",
+                "restructuring and other special charges",
+                "stock-based compensation",
+                "stock-based compensation expense",
+                "undistributed income of joint venture",
+                "gain on debt redemption",
+                "gain on deconsolidation",
+                "loss on debt redemption",
+                "loss on sale or disposal of property and equipment",
+                "net realized gain on sale of available-for-sale securities",
+                "net loss on disposal of property, plant and equipment"
+            ]
+        },
+        "Cash Flows from Investing Activities": {
+            "root": [
+                "net cash from investing activities"
+            ],
+            "Capital Expenditures": [
+                "capital expenditures"
+            ],
+            "Asset Sales / Purchases": [
+                "asset purchases",
+                "asset sales",
+                "disposal of property, plant and equipment"
+            ]
+        },
+        "Cash Flows from Financing Activities": {
+            "root": [
+                "net cash from financing activities"
+            ],
+            "Proceeds from Debt/Equity": [
+                "proceeds"
+            ],
+            "Dividends Paid": [
+                "dividends paid"
+            ],
+            "Debt Repayments": [
+                "repayment"
+            ]
+        },
+        "Other Cash Flow Items": [
+            "cash at beginning of period",
+            "cash at end of period",
+            "net increase in cash",
+            "free cash flow",
+            "cash inflow",
+            "cash outflow"
+        ]
+    }
+}

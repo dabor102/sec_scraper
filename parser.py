@@ -57,6 +57,7 @@ def parse_table_headers(table):
         if len(set(years_found)) > 1:
             return sorted(list(set(years_found)), reverse=True)
     return []
+
 def scrape_data_from_tables(tables, context, all_data_points, table_map, toc_href=None):
     """
     Extracts financial data from a list of tables.
@@ -85,14 +86,17 @@ def scrape_data_from_tables(tables, context, all_data_points, table_map, toc_hre
                 continue
 
             metric_name = cells[0].get_text(" ", strip=True)
-            if not metric_name or metric_name.isdigit() or len(metric_name) > 100:
-                is_header_or_footer = all(c.get_text(" ", strip=True).isspace() for c in cells[1:])
-                if not is_header_or_footer:
-                    current_category = metric_name
+            if not metric_name or metric_name.isdigit():
                 continue
 
             full_row_text = " ".join([c.get_text(" ", strip=True) for c in cells[1:]])
-            value_strings = re.findall(r'(\(.*?\)|—|[\d,.-]+)', full_row_text)
+            value_strings = re.findall(r'(\([\d,.-]+\)|—|[\d,.-]+)', full_row_text)
+
+            # *** NEW LOGIC ***
+            # A row is only a category header if it contains no extractable financial values.
+            if not value_strings:
+                current_category = metric_name
+                continue
 
             if len(value_strings) == num_periods:
                 for i, period in enumerate(fiscal_periods):
@@ -109,7 +113,6 @@ def scrape_data_from_tables(tables, context, all_data_points, table_map, toc_hre
                             # Use ToC href if available, otherwise use the table's own ID
                             "href": toc_href if toc_href else f"#{table_info['id']}"
                         })
-
 # ==============================================================================
 # SECTION 2: TOC-GUIDED SCRAPING LOGIC (PRIMARY PATH)
 # ==============================================================================
@@ -309,6 +312,8 @@ def process_single_filing(filing_info, terms_dict):
     """
     Main worker function that routes processing to either the ToC-Guided path or the Fallback path.
     """
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
     filepath, filing_meta = filing_info
     logging.info(f"[PID {os.getpid()}] Processing: {os.path.basename(filepath)}")
     status_report = {'filepath': os.path.basename(filepath), 'statements': {stype: 'Missing' for stype in terms_dict.keys()}}
