@@ -1,6 +1,7 @@
 # parser.py
 
 import logging
+import logging.handlers
 import re
 import os
 from datetime import datetime
@@ -63,56 +64,43 @@ def scrape_data_from_tables(tables, context, all_data_points, table_map, toc_hre
     Extracts financial data from a list of tables.
     """
     for table in tables:
-        # Find the table's number and ID from the global map
         table_info = None
         for tbl, info in table_map.items():
             if str(tbl) == str(table):
                 table_info = info
                 break
-
         if not table_info:
             continue
-
         fiscal_periods = parse_table_headers(table)
         num_periods = len(fiscal_periods)
         if num_periods == 0:
             continue
-
         units = find_table_units(table) or "N/A"
         current_category = ""
         for row in table.find_all('tr'):
             cells = row.find_all(['td', 'th'])
             if not cells:
                 continue
-
             metric_name = cells[0].get_text(" ", strip=True)
             if not metric_name or metric_name.isdigit():
                 continue
-
             full_row_text = " ".join([c.get_text(" ", strip=True) for c in cells[1:]])
             value_strings = re.findall(r'(\([\d,.-]+\)|—|[\d,.-]+)', full_row_text)
-
-            # *** NEW LOGIC ***
-            # A row is only a category header if it contains no extractable financial values.
             if not value_strings:
                 current_category = metric_name
                 continue
-
             if len(value_strings) == num_periods:
                 for i, period in enumerate(fiscal_periods):
                     value = parse_financial_value(value_strings[i])
                     if value is not None:
                         all_data_points.append({
                             **context,
-                            "metric": metric_name,
-                            "value": value,
-                            "units": units,
-                            "fiscal_period": period,
-                            "category": current_category,
+                            "metric": metric_name, "value": value, "units": units,
+                            "fiscal_period": period, "category": current_category,
                             "table_number": table_info['number'],
-                            # Use ToC href if available, otherwise use the table's own ID
                             "href": toc_href if toc_href else f"#{table_info['id']}"
                         })
+
 # ==============================================================================
 # SECTION 2: TOC-GUIDED SCRAPING LOGIC (PRIMARY PATH)
 # ==============================================================================
@@ -121,6 +109,7 @@ def extract_filing_index(soup):
     """
     Finds and parses the Table of Contents, mapping items to their anchor tags.
     """
+    # ... (rest of the function is unchanged) ...
     index = []
     toc_table = None
 
@@ -173,12 +162,11 @@ def extract_filing_index(soup):
             })
     return index
 
-
 def get_section_content_between_anchors(start_tag, end_tag):
     """
     Extracts all tags between a start and end anchor tag to "slice" the document.
-    This final version correctly iterates through siblings starting from the anchor itself.
     """
+    # ... (rest of the function is unchanged) ...
     content_tags = []
     
     # Start with the anchor tag itself.
@@ -205,6 +193,7 @@ def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_p
     """
     Orchestrates the precise, ToC-guided scraping workflow.
     """
+    # ... (rest of the function is unchanged) ...
     logging.info("Starting ToC-Guided scraping path...")
     mapped_statements = classify_toc_items(full_index, list(terms_dict.keys()))
 
@@ -237,7 +226,6 @@ def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_p
             logging.warning(f"Found section for '{statement_type}' but no tables within it.")
     
     return True # Indicate success of the guided path
-
 # ==============================================================================
 # SECTION 3: FALLBACK SCRAPING LOGIC
 # ==============================================================================
@@ -246,7 +234,8 @@ def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict
     """
     Scans all tables in the document if the ToC method fails.
     """
-    logging.warning("Executing Fallback scraping path (global table scan).")
+    logger = logging.getLogger()
+    logger.warning("Executing Fallback scraping path (global table scan).")
     
     def get_all_terms(data):
         if isinstance(data, list): return data
@@ -260,18 +249,21 @@ def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict
     scored_tables = []
 
     for i, table in enumerate(all_tables):
+        table_info = table_map.get(table, {"number": "N/A"})
         scores = {}
         text = table.get_text(" ", strip=True).lower()
         if '%' in text[:500]: # Skip common-size percentage tables
             continue
         for s_type, terms in flat_terms.items():
             scores[s_type] = sum(1 for term in terms if term in text)
-        if any(s > 10 for s in scores.values()):
-            scored_tables.append({'table_obj': table, 'scores': scores})
+        
+        # Add detailed logging for table scores
+        if any(s > 5 for s in scores.values()):
+            logger.info(f"Table #{table_info['number']} scores: {scores}")
+            scored_tables.append({'table_obj': table, 'scores': scores, 'number': table_info['number']})
 
     found_statements = {}
     for s_type in terms_dict.keys():
-        # Find the best candidate table for this statement type that hasn't already been chosen
         best_candidate = max(
             (c for c in scored_tables if c['table_obj'] not in found_statements.values()),
             key=lambda x: x['scores'].get(s_type, 0),
@@ -279,10 +271,10 @@ def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict
         )
         if best_candidate and best_candidate['scores'].get(s_type, 0) > 10:
             found_statements[s_type] = best_candidate['table_obj']
+            logger.info(f"Selected Table #{best_candidate['number']} for {s_type} with score {best_candidate['scores'].get(s_type, 0)}")
 
     for s_type, table in found_statements.items():
         context = {**base_context, "table_description": s_type.replace('_', ' ').title()}
-        # For fallback, toc_href remains None, so the function will generate the href from the table ID
         scrape_data_from_tables([table], context, all_data_points, table_map)
         status_report['statements'][s_type] = 'Found (Fallback)'
 
@@ -294,6 +286,7 @@ def extract_fiscal_period(html_content):
     """
     Extracts the fiscal period end date from the HTML and creates the initial soup object.
     """
+    # ... (rest of the function is unchanged) ...
     soup = BeautifulSoup(html_content, 'html.parser')
     patterns = [r"for\s+the\s+fiscal\s+year\s+ended", r"for\s+the\s+quarterly\s+period\s+ended"]
     date_pattern = re.compile(r'([a-zA-Z]+\s+\d{1,2}\s*,\s*\d{4})', re.IGNORECASE)
@@ -308,14 +301,22 @@ def extract_fiscal_period(html_content):
                 pass
     return None, soup
 
-def process_single_filing(filing_info, terms_dict):
+def worker_configurer(queue):
+    """Configures logging for a worker process."""
+    h = logging.handlers.QueueHandler(queue)
+    root = logging.getLogger()
+    root.addHandler(h)
+    root.setLevel(logging.INFO)
+    
+def process_single_filing(filing_info, terms_dict, queue):
     """
     Main worker function that routes processing to either the ToC-Guided path or the Fallback path.
     """
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    worker_configurer(queue)
+    logger = logging.getLogger()
     
     filepath, filing_meta = filing_info
-    logging.info(f"[PID {os.getpid()}] Processing: {os.path.basename(filepath)}")
+    logger.info(f"Processing: {os.path.basename(filepath)}")
     status_report = {'filepath': os.path.basename(filepath), 'statements': {stype: 'Missing' for stype in terms_dict.keys()}}
     
     try:
@@ -324,10 +325,9 @@ def process_single_filing(filing_info, terms_dict):
 
         period_end_date, soup = extract_fiscal_period(html_content)
         if not period_end_date:
-            logging.warning(f"-> Skipping {os.path.basename(filepath)}: Could not find period end date.")
+            logger.warning(f"-> Skipping {os.path.basename(filepath)}: Could not find period end date.")
             return [], status_report
         
-        # --- TABLE NUMBERING AND ID ASSIGNMENT ---
         all_tables = soup.find_all('table')
         table_map = {}
         for i, table in enumerate(all_tables):
@@ -337,26 +337,22 @@ def process_single_filing(filing_info, terms_dict):
 
         file_data_points = []
         base_context = {
-            'symbol': filing_meta.get('symbol'),
-            'form_type': filing_meta.get('form_type'),
-            'date_filed': filing_meta.get('date_filed'),
-            'period_end_date': period_end_date,
+            'symbol': filing_meta.get('symbol'), 'form_type': filing_meta.get('form_type'),
+            'date_filed': filing_meta.get('date_filed'), 'period_end_date': period_end_date,
         }
         
-        # --- ROUTING LOGIC ---
         filing_index = extract_filing_index(soup)
         
         guided_scrape_successful = False
         if filing_index:
             guided_scrape_successful = process_guided_scrape(filing_index, soup, base_context, terms_dict, file_data_points, status_report, table_map)
         
-        # If the ToC path was not attempted or did not succeed, use the fallback method
         if not guided_scrape_successful:
             find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict, file_data_points, status_report, table_map)
 
-        logging.info(f"[PID {os.getpid()}] Finished {os.path.basename(filepath)}, found {len(file_data_points)} data points.")
+        logger.info(f"Finished {os.path.basename(filepath)}, found {len(file_data_points)} data points.")
         return file_data_points, status_report
 
     except Exception as e:
-        logging.error(f"An unexpected error occurred while processing {os.path.basename(filepath)}: {e}", exc_info=True)
+        logger.error(f"An unexpected error occurred while processing {os.path.basename(filepath)}: {e}", exc_info=True)
         return [], status_report
