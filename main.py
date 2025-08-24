@@ -37,18 +37,10 @@ def listener_process(queue, configurer):
             print('Whoops! Problem:', file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
 
-def worker_configurer(queue):
-    """Configures logging for a worker process."""
-    h = logging.handlers.QueueHandler(queue)
-    root = logging.getLogger()
-    root.addHandler(h)
-    root.setLevel(logging.INFO)
-
 def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, save_dir, log_queue):
     """
     Main orchestration function to scrape SEC filings.
     """
-    worker_configurer(log_queue)
     logger = logging.getLogger()
     
     logger.info("-" * 50)
@@ -56,11 +48,7 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
     logger.info("-" * 50)
 
     if filing_urls:
-        logger.info(f"Processing {len(filing_urls)} provided filing URLs.")
-        filings_meta_to_process = []
-        for f in filing_urls:
-            f['symbol'] = symbol
-            filings_meta_to_process.append(f)
+        filings_meta_to_process = [{'symbol': symbol, **f} for f in filing_urls]
     else:
         filings_meta_to_process = fetch_filing_metadata(symbol, start_year, end_year, form_groups)
 
@@ -79,11 +67,9 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
     # STAGE 2: Parallel Processing
     logger.info(f"\n--- STAGE 2: Starting Parallel Processing of {len(downloaded_files_info)} files ---")
     
-    # Load financial terms and prepare the worker function
     with open('financial_statement_terms.json', 'r', encoding='utf-8') as f:
         financial_statement_terms = json.load(f)
     
-    # Pass the log queue and terms dictionary to the worker
     worker_func = partial(process_single_filing, terms_dict=financial_statement_terms, queue=log_queue)
 
     all_data_points = []
@@ -100,8 +86,23 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
     logger.info("\n" + "="*70)
     logger.info("Scraping and Processing Complete.")
     
+    # *** NEW DETAILED SUMMARY LOGGING ***
+    logger.info("--- Detailed Filing Summary ---")
+    for report in filing_reports:
+        filepath = report.get('filepath', 'Unknown File')
+        statements = report.get('statements', {})
+        found = [s_type for s_type, status in statements.items() if status != 'Missing']
+        missing = [s_type for s_type, status in statements.items() if status == 'Missing']
+        
+        summary_message = f"File: {filepath} | Found {len(found)}/3 statements."
+        if missing:
+            summary_message += f" (Missing: {', '.join(missing)})"
+        
+        logger.info(summary_message)
+    logger.info("-----------------------------")
+
     successful_filings = sum(1 for r in filing_reports if all(s != 'Missing' for s in r['statements'].values()))
-    accuracy = (successful_filings / len(downloaded_files_info)) * 100
+    accuracy = (successful_filings / len(downloaded_files_info)) * 100 if downloaded_files_info else 0
     logger.info(f"Overall Accuracy: {successful_filings}/{len(downloaded_files_info)} filings ({accuracy:.2f}%) successfully scraped.")
 
     # STAGE 4: DataFrame Creation
@@ -125,36 +126,40 @@ def main():
     form_groups = ['Quarterly Reports'] #'Annual Reports',  
     filing_urls_to_scrape = [] 
 
-    # --- LOGGING SETUP ---
-    queue = multiprocessing.Queue(-1)
-    listener = multiprocessing.Process(target=listener_process, args=(queue, listener_configurer))
-    listener.start()
-
-    # The main process also needs a basic configuration to log its own messages
-    worker_configurer(queue)
-    logger = logging.getLogger()
-    
-    final_df = scrape_sec_filings(
-        symbol=symbol, 
-        start_year=start_year, 
-        end_year=end_year, 
-        form_groups=form_groups,
-        filing_urls=filing_urls_to_scrape,
-        save_dir=f"sec_filings_{symbol.upper()}",
-        log_queue=queue
-    )
-
-    if final_df is not None and not final_df.empty:
-        output_filename = f"{symbol.upper()}_financial_data_parallel.csv"
-        final_df.to_csv(output_filename, index=False, encoding='utf-8')
-        logger.info(f"Successfully exported data to {output_filename}")
-        print(f"\nSample of the final DataFrame:\n{final_df.head()}")
-    else:
-        logger.warning("No data was scraped, CSV file not created.")
+    # --- Use a Manager to create a shareable queue ---
+    with multiprocessing.Manager() as manager:
+        log_queue = manager.Queue(-1)
         
-    # --- SHUTDOWN LOGGING ---
-    queue.put_nowait(None)
-    listener.join()
+        listener = multiprocessing.Process(target=listener_process, args=(log_queue, listener_configurer))
+        listener.start()
+
+        # Configure the main process logger
+        h = logging.handlers.QueueHandler(log_queue)
+        root = logging.getLogger()
+        root.addHandler(h)
+        root.setLevel(logging.INFO)
+        
+        final_df = scrape_sec_filings(
+            symbol=symbol, 
+            start_year=start_year, 
+            end_year=end_year, 
+            form_groups=form_groups,
+            filing_urls=filing_urls_to_scrape,
+            save_dir=f"sec_filings_{symbol.upper()}",
+            log_queue=log_queue
+        )
+
+        if final_df is not None and not final_df.empty:
+            output_filename = f"{symbol.upper()}_financial_data_parallel.csv"
+            final_df.to_csv(output_filename, index=False, encoding='utf-8')
+            root.info(f"Successfully exported data to {output_filename}")
+            print(f"\nSample of the final DataFrame:\n{final_df.head()}")
+        else:
+            root.warning("No data was scraped, CSV file not created.")
+            
+        # --- SHUTDOWN LOGGING ---
+        log_queue.put_nowait(None)
+        listener.join()
 
 if __name__ == '__main__':
     main()

@@ -25,7 +25,7 @@ def parse_financial_value(value_str):
         return None
     is_negative = cleaned_str.startswith('(') and cleaned_str.endswith(')')
     if is_negative:
-        cleaned_str = '-' + cleaned_str[1:-1]
+        cleaned_str = '-' + re.sub(r'[^\d.]', '', cleaned_str)
     try:
         return float(cleaned_str)
     except (ValueError, TypeError):
@@ -49,71 +49,104 @@ def find_table_units(table):
 
 def parse_table_headers(table):
     """
-    Finds the header row in a table and returns an ordered list of fiscal years found.
+    Finds the header row in a table and returns a list of all fiscal years found,
+    preserving duplicates to correctly count the number of periods.
     """
+    logger = logging.getLogger()
     header_rows = table.find_all('tr', limit=10)
-    year_pattern = re.compile(r'\b(20\d{2})\b')
+    # This regex captures full dates (e.g., "Apr. 30, 2025") and standalone years (e.g., "2024")
+    date_pattern = re.compile(r'\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},\s+20\d{2})\b|\b(20\d{2})\b', re.IGNORECASE)
+    
     for row in header_rows:
-        years_found = year_pattern.findall(row.get_text(" ", strip=True))
-        if len(set(years_found)) > 1:
-            return sorted(list(set(years_found)), reverse=True)
+        header_text = row.get_text(" ", strip=True)
+        matches = date_pattern.findall(header_text)
+        
+        years_found = []
+        for full_date, year_only in matches:
+            if full_date:
+                try:
+                    # Extract the year from the full date string
+                    years_found.append(re.search(r'(20\d{2})', full_date).group(1))
+                except (AttributeError, IndexError):
+                    continue
+            elif year_only:
+                years_found.append(year_only)
+
+        # We need at least one year/date to consider it a valid header
+        if years_found:
+            logger.info(f"Header parse found raw years: {years_found} in text: '{header_text[:150]}...'")
+            # *** FIX: Return the list with duplicates, but sorted. ***
+            # The count of this list is the true number of data columns.
+            return sorted(years_found, reverse=True)
+            
+    logger.warning("Could not find any valid fiscal periods in table headers.")
     return []
+
 
 def scrape_data_from_tables(tables, context, all_data_points, table_map, toc_href=None):
     """
     Extracts financial data from a list of tables.
     """
+    logger = logging.getLogger()
     for table in tables:
-        table_info = None
-        for tbl, info in table_map.items():
-            if str(tbl) == str(table):
-                table_info = info
-                break
+        table_info = table_map.get(table)
         if not table_info:
             continue
+
         fiscal_periods = parse_table_headers(table)
         num_periods = len(fiscal_periods)
+        
         if num_periods == 0:
+            logger.warning(f"Skipping table #{table_info.get('number', 'N/A')} because no fiscal periods were found.")
             continue
+
         units = find_table_units(table) or "N/A"
         current_category = ""
         for row in table.find_all('tr'):
             cells = row.find_all(['td', 'th'])
             if not cells:
                 continue
+
             metric_name = cells[0].get_text(" ", strip=True)
             if not metric_name or metric_name.isdigit():
                 continue
+
             full_row_text = " ".join([c.get_text(" ", strip=True) for c in cells[1:]])
             value_strings = re.findall(r'(\([\d,.-]+\)|—|[\d,.-]+)', full_row_text)
+
             if not value_strings:
                 current_category = metric_name
                 continue
+            
+            # This is the critical check that was failing before
             if len(value_strings) == num_periods:
                 for i, period in enumerate(fiscal_periods):
-                    value = parse_financial_value(value_strings[i])
-                    if value is not None:
-                        all_data_points.append({
-                            **context,
-                            "metric": metric_name, "value": value, "units": units,
-                            "fiscal_period": period, "category": current_category,
-                            "table_number": table_info['number'],
-                            "href": toc_href if toc_href else f"#{table_info['id']}"
-                        })
+                    # Gracefully handle if there are fewer values than periods
+                    if i < len(value_strings):
+                        value = parse_financial_value(value_strings[i])
+                        if value is not None:
+                            all_data_points.append({
+                                **context,
+                                "metric": metric_name,
+                                "value": value,
+                                "units": units,
+                                "fiscal_period": period,
+                                "category": current_category,
+                                "table_number": table_info['number'],
+                                "href": toc_href if toc_href else f"#{table_info['id']}"
+                            })
+            elif value_strings:
+                 logger.warning(f"Skipping row '{metric_name[:50]}...'. Found {len(value_strings)} values but expected {num_periods}.")
+
 
 # ==============================================================================
 # SECTION 2: TOC-GUIDED SCRAPING LOGIC (PRIMARY PATH)
 # ==============================================================================
 
 def extract_filing_index(soup):
-    """
-    Finds and parses the Table of Contents, mapping items to their anchor tags.
-    """
-    # ... (rest of the function is unchanged) ...
     index = []
     toc_table = None
 
-    # Primary Method: Find a centered "TABLE OF CONTENTS" header
     potential_headers = soup.find_all(lambda tag: tag.name in ['p', 'div', 'b'] and re.search(r'^\s*TABLE\s+OF\s+CONTENTS\s*$', tag.get_text(strip=True), re.IGNORECASE))
     for header in potential_headers:
         parent = header.find_parent(('div', 'p')) or header
@@ -124,7 +157,6 @@ def extract_filing_index(soup):
                 logging.info("Found ToC table via primary method (header search).")
                 break
 
-    # Fallback Method: Find any table with a high density of internal links
     if not toc_table:
         for table in soup.find_all('table'):
             rows = table.find_all('tr')
@@ -162,38 +194,25 @@ def extract_filing_index(soup):
             })
     return index
 
+
 def get_section_content_between_anchors(start_tag, end_tag):
-    """
-    Extracts all tags between a start and end anchor tag to "slice" the document.
-    """
-    # ... (rest of the function is unchanged) ...
     content_tags = []
-    
-    # Start with the anchor tag itself.
     current_tag = start_tag
     
     while current_tag:
-        # The end_tag marks the beginning of the *next* section, so we stop when we see it.
         if current_tag == end_tag:
             break
         
         content_tags.append(current_tag)
-        
-        # Move to the next sibling tag in the document tree.
         current_tag = current_tag.find_next_sibling()
 
     if not content_tags:
         logging.warning("Slicing function found no content between anchors.")
         return BeautifulSoup("", 'html.parser')
 
-    # Re-parse the collected tags into a new, self-contained soup object for isolated searching.
     return BeautifulSoup("".join(str(t) for t in content_tags), 'html.parser')
 
 def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_points, status_report, table_map):
-    """
-    Orchestrates the precise, ToC-guided scraping workflow.
-    """
-    # ... (rest of the function is unchanged) ...
     logging.info("Starting ToC-Guided scraping path...")
     mapped_statements = classify_toc_items(full_index, list(terms_dict.keys()))
 
@@ -205,7 +224,6 @@ def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_p
 
     for statement_type, toc_item in mapped_statements.items():
         start_tag = toc_item['anchor_tag']
-        # Capture the href from the ToC item
         toc_anchor_href = toc_item['anchor_href']
         current_pos = tag_to_index_pos.get(start_tag)
 
@@ -219,21 +237,18 @@ def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_p
         tables_in_section = section_soup.find_all('table')
         if tables_in_section:
             context = {**base_context, "table_description": statement_type.replace('_', ' ').title()}
-            # Pass the toc_anchor_href to the scraping function
             scrape_data_from_tables(tables_in_section, context, all_data_points, table_map, toc_href=toc_anchor_href)
             status_report['statements'][statement_type] = 'Found (ToC-Guided)'
         else:
             logging.warning(f"Found section for '{statement_type}' but no tables within it.")
     
-    return True # Indicate success of the guided path
+    return True
+
 # ==============================================================================
 # SECTION 3: FALLBACK SCRAPING LOGIC
 # ==============================================================================
 
 def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict, all_data_points, status_report, table_map):
-    """
-    Scans all tables in the document if the ToC method fails.
-    """
     logger = logging.getLogger()
     logger.warning("Executing Fallback scraping path (global table scan).")
     
@@ -252,12 +267,11 @@ def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict
         table_info = table_map.get(table, {"number": "N/A"})
         scores = {}
         text = table.get_text(" ", strip=True).lower()
-        if '%' in text[:500]: # Skip common-size percentage tables
+        if '%' in text[:500]: 
             continue
         for s_type, terms in flat_terms.items():
             scores[s_type] = sum(1 for term in terms if term in text)
         
-        # Add detailed logging for table scores
         if any(s > 5 for s in scores.values()):
             logger.info(f"Table #{table_info['number']} scores: {scores}")
             scored_tables.append({'table_obj': table, 'scores': scores, 'number': table_info['number']})
@@ -283,10 +297,6 @@ def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict
 # ==============================================================================
 
 def extract_fiscal_period(html_content):
-    """
-    Extracts the fiscal period end date from the HTML and creates the initial soup object.
-    """
-    # ... (rest of the function is unchanged) ...
     soup = BeautifulSoup(html_content, 'html.parser')
     patterns = [r"for\s+the\s+fiscal\s+year\s+ended", r"for\s+the\s+quarterly\s+period\s+ended"]
     date_pattern = re.compile(r'([a-zA-Z]+\s+\d{1,2}\s*,\s*\d{4})', re.IGNORECASE)
@@ -302,16 +312,12 @@ def extract_fiscal_period(html_content):
     return None, soup
 
 def worker_configurer(queue):
-    """Configures logging for a worker process."""
     h = logging.handlers.QueueHandler(queue)
     root = logging.getLogger()
     root.addHandler(h)
     root.setLevel(logging.INFO)
     
 def process_single_filing(filing_info, terms_dict, queue):
-    """
-    Main worker function that routes processing to either the ToC-Guided path or the Fallback path.
-    """
     worker_configurer(queue)
     logger = logging.getLogger()
     
