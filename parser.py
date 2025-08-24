@@ -1,76 +1,282 @@
 # parser.py
+
 import logging
 import re
 import os
 from datetime import datetime
-from bs4 import BeautifulSoup
-from llm_analyzer import get_llm_classification
+from bs4 import BeautifulSoup, Tag
+from llm_analyzer import get_llm_classification, classify_toc_items
+
+# ==============================================================================
+# SECTION 1: CORE PARSING UTILITIES
+# ==============================================================================
 
 def parse_financial_value(value_str):
-    if not value_str: return None
+    """
+    Parses a string to extract a financial value, handling commas, parentheses for negatives, and dashes.
+    """
+    if not value_str:
+        return None
     cleaned_str = value_str.strip().replace('$', '').replace(',', '')
-    if cleaned_str in ['—', '-']: return 0.0
-    if not cleaned_str: return None
+    if cleaned_str in ['—', '-']:
+        return 0.0
+    if not cleaned_str:
+        return None
     is_negative = cleaned_str.startswith('(') and cleaned_str.endswith(')')
-    if is_negative: cleaned_str = '-' + cleaned_str[1:-1]
-    try: return float(cleaned_str)
-    except (ValueError, TypeError): return None
+    if is_negative:
+        cleaned_str = '-' + cleaned_str[1:-1]
+    try:
+        return float(cleaned_str)
+    except (ValueError, TypeError):
+        return None
 
 def find_table_units(table):
+    """
+    Searches for financial units (e.g., 'in millions') associated with a table.
+    """
     unit_pattern = re.compile(r'\((?:in\s+)?(?:millions|thousands|billions)[^)]*\)', re.IGNORECASE)
     for row in table.find_all('tr', limit=5):
         match = unit_pattern.search(row.get_text(" ", strip=True))
-        if match: return match.group(0)
+        if match:
+            return match.group(0)
     for prev_tag in table.find_previous_siblings(limit=15):
         if prev_tag.name in ['p', 'div', 'span', 'b', 'strong']:
             match = unit_pattern.search(prev_tag.get_text(" ", strip=True))
-            if match: return match.group(0)
+            if match:
+                return match.group(0)
     return None
 
 def parse_table_headers(table):
+    """
+    Finds the header row in a table and returns an ordered list of fiscal years found.
+    """
     header_rows = table.find_all('tr', limit=10)
     year_pattern = re.compile(r'\b(20\d{2})\b')
     for row in header_rows:
         years_found = year_pattern.findall(row.get_text(" ", strip=True))
-        if len(set(years_found)) > 1: return sorted(list(set(years_found)), reverse=True)
+        if len(set(years_found)) > 1:
+            return sorted(list(set(years_found)), reverse=True)
     return []
 
 def scrape_data_from_tables(tables, context, all_data_points):
+    """
+    Extracts financial data from a list of tables.
+    """
     table_counter = context['table_counter']
     for table in tables:
         table_counter[0] += 1
         fiscal_periods = parse_table_headers(table)
         num_periods = len(fiscal_periods)
         if num_periods == 0:
-            logging.warning(f"Table #{table_counter[0]}: Could not determine fiscal periods. Skipping.")
             continue
-        
-        units = find_table_units(table)
-        if not units:
-            context['missing_units_counter'][0] += 1
-            units = "N/A"
-        
+
+        units = find_table_units(table) or "N/A"
         current_category = ""
         for row in table.find_all('tr'):
             cells = row.find_all(['td', 'th'])
-            if not cells: continue
+            if not cells:
+                continue
+
             metric_name = cells[0].get_text(" ", strip=True)
             if not metric_name or metric_name.isdigit() or len(metric_name) > 100:
-                is_header_or_footer = all(c.get_text(" ", strip=True).isspace() or c.get_text(" ", strip=True) == '' for c in cells[1:])
-                if not is_header_or_footer: current_category = metric_name
+                is_header_or_footer = all(c.get_text(" ", strip=True).isspace() for c in cells[1:])
+                if not is_header_or_footer:
+                    current_category = metric_name
                 continue
-            
+
             full_row_text = " ".join([c.get_text(" ", strip=True) for c in cells[1:]])
             value_strings = re.findall(r'(\(.*?\)|—|[\d,.-]+)', full_row_text)
-            
+
             if len(value_strings) == num_periods:
                 for i, period in enumerate(fiscal_periods):
                     value = parse_financial_value(value_strings[i])
                     if value is not None:
-                        data_point = {**context, "table_no": table_counter[0], "category": current_category, "metric": metric_name, "value": value, "units": units, "fiscal_period": period}
-                        all_data_points.append(data_point)
+                        all_data_points.append({
+                            **context,
+                            "metric": metric_name,
+                            "value": value,
+                            "units": units,
+                            "fiscal_period": period,
+                            "category": current_category
+                        })
+
+# ==============================================================================
+# SECTION 2: TOC-GUIDED SCRAPING LOGIC (PRIMARY PATH)
+# ==============================================================================
+
+def extract_filing_index(soup):
+    """
+    Finds and parses the Table of Contents, mapping items to their anchor tags.
+    """
+    index = []
+    toc_table = None
+
+    # Primary Method: Find a centered "TABLE OF CONTENTS" header
+    potential_headers = soup.find_all(lambda tag: tag.name in ['p', 'div', 'b'] and re.search(r'^\s*TABLE\s+OF\s+CONTENTS\s*$', tag.get_text(strip=True), re.IGNORECASE))
+    for header in potential_headers:
+        parent = header.find_parent(('div', 'p')) or header
+        if 'center' in parent.get('align', '') or 'text-align:center' in parent.get('style', ''):
+            potential_table = parent.find_next('table')
+            if potential_table and len(potential_table.find_all('tr')) > 5:
+                toc_table = potential_table
+                logging.info("Found ToC table via primary method (header search).")
+                break
+
+    # Fallback Method: Find any table with a high density of internal links
+    if not toc_table:
+        for table in soup.find_all('table'):
+            rows = table.find_all('tr')
+            if len(rows) < 10:
+                continue
+            link_count = sum(1 for r in rows[:15] if r.find('a', href=lambda h: h and h.startswith('#')))
+            if link_count > 5:
+                toc_table = table
+                logging.info("Found ToC table via fallback method (structural analysis).")
+                break
+
+    if not toc_table:
+        return []
+
+    for row in toc_table.find_all('tr'):
+        links = row.find_all('a', href=lambda href: href and href.startswith('#'))
+        if not links:
+            continue
+
+        main_href = links[-1]['href']
+        anchor_name = main_href.lstrip('#')
+        anchor_tag = soup.find('a', {'name': anchor_name}) or soup.find(id=anchor_name)
+
+        text = row.get_text(" ", strip=True).replace('\xa0', ' ')
+        item_match = re.search(r'(ITEM\s+\d+[A-Z]?\.?)', text, re.IGNORECASE)
+        desc = re.sub(r'^\s*ITEM\s+\d+[A-Z]?\.?\s*', '', text, flags=re.IGNORECASE).strip()
+        desc = re.sub(r'[\s.]+\d+\s*$', '', desc).strip()
+
+        if desc and anchor_tag:
+            index.append({
+                'item_no': item_match.group(1).upper().strip() if item_match else "N/A",
+                'item_description': desc,
+                'anchor_href': main_href,
+                'anchor_tag': anchor_tag
+            })
+    return index
+
+
+def get_section_content_between_anchors(start_tag, end_tag):
+    """
+    Extracts all tags between a start and end anchor tag to "slice" the document.
+    This final version correctly iterates through siblings starting from the anchor itself.
+    """
+    content_tags = []
+    
+    # Start with the anchor tag itself.
+    current_tag = start_tag
+    
+    while current_tag:
+        # The end_tag marks the beginning of the *next* section, so we stop when we see it.
+        if current_tag == end_tag:
+            break
+        
+        content_tags.append(current_tag)
+        
+        # Move to the next sibling tag in the document tree.
+        current_tag = current_tag.find_next_sibling()
+
+    if not content_tags:
+        logging.warning("Slicing function found no content between anchors.")
+        return BeautifulSoup("", 'html.parser')
+
+    # Re-parse the collected tags into a new, self-contained soup object for isolated searching.
+    return BeautifulSoup("".join(str(t) for t in content_tags), 'html.parser')
+
+def process_guided_scrape(full_index, soup, base_context, terms_dict, all_data_points, status_report):
+    """
+    Orchestrates the precise, ToC-guided scraping workflow.
+    """
+    logging.info("Starting ToC-Guided scraping path...")
+    mapped_statements = classify_toc_items(full_index, list(terms_dict.keys()))
+
+    if not mapped_statements:
+        logging.warning("LLM could not map any ToC items to statements. Aborting guided scrape.")
+        return False
+
+    tag_to_index_pos = {item['anchor_tag']: i for i, item in enumerate(full_index)}
+
+    for statement_type, toc_item in mapped_statements.items():
+        start_tag = toc_item['anchor_tag']
+        current_pos = tag_to_index_pos.get(start_tag)
+
+        end_tag = None
+        if current_pos is not None and current_pos + 1 < len(full_index):
+            end_tag = full_index[current_pos + 1]['anchor_tag']
+
+        logging.info(f"Slicing document for '{statement_type}'...")
+        section_soup = get_section_content_between_anchors(start_tag, end_tag)
+
+        tables_in_section = section_soup.find_all('table')
+        if tables_in_section:
+            context = {**base_context, "table_description": statement_type.replace('_', ' ').title()}
+            scrape_data_from_tables(tables_in_section, context, all_data_points)
+            status_report['statements'][statement_type] = 'Found (ToC-Guided)'
+        else:
+            logging.warning(f"Found section for '{statement_type}' but no tables within it.")
+    
+    return True # Indicate success of the guided path
+
+# ==============================================================================
+# SECTION 3: FALLBACK SCRAPING LOGIC
+# ==============================================================================
+
+def find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict, all_data_points, status_report):
+    """
+    Scans all tables in the document if the ToC method fails.
+    """
+    logging.warning("Executing Fallback scraping path (global table scan).")
+    
+    def get_all_terms(data):
+        if isinstance(data, list): return data
+        terms = []
+        if isinstance(data, dict):
+            for v in data.values(): terms.extend(get_all_terms(v))
+        return terms
+
+    flat_terms = {s: get_all_terms(c) for s, c in terms_dict.items()}
+    all_tables = soup.find_all('table')
+    scored_tables = []
+
+    for i, table in enumerate(all_tables):
+        scores = {}
+        text = table.get_text(" ", strip=True).lower()
+        if '%' in text[:500]: # Skip common-size percentage tables
+            continue
+        for s_type, terms in flat_terms.items():
+            scores[s_type] = sum(1 for term in terms if term in text)
+        if any(s > 10 for s in scores.values()):
+            scored_tables.append({'table_obj': table, 'scores': scores})
+
+    found_statements = {}
+    for s_type in terms_dict.keys():
+        # Find the best candidate table for this statement type that hasn't already been chosen
+        best_candidate = max(
+            (c for c in scored_tables if c['table_obj'] not in found_statements.values()),
+            key=lambda x: x['scores'].get(s_type, 0),
+            default=None
+        )
+        if best_candidate and best_candidate['scores'].get(s_type, 0) > 10:
+            found_statements[s_type] = best_candidate['table_obj']
+
+    for s_type, table in found_statements.items():
+        context = {**base_context, "table_description": s_type.replace('_', ' ').title()}
+        scrape_data_from_tables([table], context, all_data_points)
+        status_report['statements'][s_type] = 'Found (Fallback)'
+
+# ==============================================================================
+# SECTION 4: MAIN PROCESSING ROUTER
+# ==============================================================================
 
 def extract_fiscal_period(html_content):
+    """
+    Extracts the fiscal period end date from the HTML and creates the initial soup object.
+    """
     soup = BeautifulSoup(html_content, 'html.parser')
     patterns = [r"for\s+the\s+fiscal\s+year\s+ended", r"for\s+the\s+quarterly\s+period\s+ended"]
     date_pattern = re.compile(r'([a-zA-Z]+\s+\d{1,2}\s*,\s*\d{4})', re.IGNORECASE)
@@ -81,86 +287,50 @@ def extract_fiscal_period(html_content):
             try:
                 date_str = re.sub(r'\s+,', ',', date_match.group(1))
                 return datetime.strptime(date_str, "%B %d, %Y").date(), soup
-            except ValueError: pass
+            except ValueError:
+                pass
     return None, soup
 
-def get_all_terms(data_structure):
-    terms = []
-    if isinstance(data_structure, list): terms.extend(data_structure)
-    elif isinstance(data_structure, dict):
-        for value in data_structure.values(): terms.extend(get_all_terms(value))
-    return terms
-
-def _score_single_table(table, flat_terms_by_statement, table_idx_for_log):
-    header_text_to_check = " ".join(r.get_text(" ", strip=True).lower() for r in table.find_all('tr', limit=5))
-    if '%' in header_text_to_check or 'as a percentage' in header_text_to_check:
-        return {}
-    table_text_lower = table.get_text(" ", strip=True).lower()
-    scores = {statement: 0 for statement in flat_terms_by_statement}
-    for statement, terms in flat_terms_by_statement.items():
-        for term in terms:
-            if term in table_text_lower: scores[statement] += 1
-    return scores
-
-def find_and_scrape_financial_statements(soup, base_context, terms_dict_granular, all_data_points):
-    logging.info("Starting financial statement identification...")
-    flat_terms_by_statement = {s: get_all_terms(c) for s, c in terms_dict_granular.items()}
-    all_tables = soup.find_all('table')
-    scored_tables = []
-    for i, table in enumerate(all_tables):
-        scores = _score_single_table(table, flat_terms_by_statement, i)
-        if any(s > 10 for s in scores.values()):
-            scored_tables.append({"index": i, "table_obj": table, "scores": scores, "best_match": max(scores, key=scores.get) if scores else None, "max_score": max(scores.values()) if scores else 0})
-
-    found_statements = {}
-    for statement_type in terms_dict_granular.keys():
-        best_candidate = max(
-            (cand for cand in scored_tables if cand["table_obj"] not in found_statements.values()),
-            key=lambda x: x['scores'].get(statement_type, 0),
-            default=None
-        )
-        if best_candidate and best_candidate['scores'].get(statement_type, 0) > 10:
-            found_statements[statement_type] = best_candidate["table_obj"]
-            logging.info(f"Found '{statement_type}' in Table #{best_candidate['index']}")
-
-    if found_statements:
-        for statement_type, table_obj in found_statements.items():
-            table_context = {**base_context, "table_description": statement_type.replace('_', ' ').title()}
-            scrape_data_from_tables([table_obj], table_context, all_data_points)
-    
-    return found_statements, scored_tables
-
 def process_single_filing(filing_info, terms_dict):
+    """
+    Main worker function that routes processing to either the ToC-Guided path or the Fallback path.
+    """
     filepath, filing_meta = filing_info
     logging.info(f"[PID {os.getpid()}] Processing: {os.path.basename(filepath)}")
     status_report = {'filepath': os.path.basename(filepath), 'statements': {stype: 'Missing' for stype in terms_dict.keys()}}
+    
     try:
-        with open(filepath, 'r', encoding='utf-8') as f: html_content = f.read()
+        with open(filepath, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+
         period_end_date, soup = extract_fiscal_period(html_content)
         if not period_end_date:
             logging.warning(f"-> Skipping {os.path.basename(filepath)}: Could not find period end date.")
-            return [], status_report, 0
-
+            return [], status_report
+        
         file_data_points = []
-        base_context = {'symbol': filing_meta.get('symbol'), 'form_type': filing_meta.get('form_type'), 'date_filed': filing_meta.get('date_filed'), 'period_end_date': period_end_date, 'table_counter': [0], 'missing_units_counter': [0]}
-        found_statements, candidates = find_and_scrape_financial_statements(soup, base_context, terms_dict, file_data_points)
-        for stype in found_statements: status_report['statements'][stype] = 'Found'
-
-        if len(found_statements) < 3:
-            missing_types = set(terms_dict.keys()) - set(found_statements.keys())
-            for missing_type in missing_types:
-                potential_tables = [c for c in candidates if c.get("best_match") == missing_type]
-                for cand in potential_tables:
-                    llm_result = get_llm_classification(cand["table_obj"], missing_type, terms_dict)
-                    if llm_result and llm_result.get("identified_statement_type") == missing_type:
-                        logging.info(f"  -> LLM CONFIRMED '{missing_type}'. Scraping.")
-                        table_context = {**base_context, "table_description": missing_type.replace('_', ' ').title()}
-                        scrape_data_from_tables([cand["table_obj"]], table_context, file_data_points)
-                        status_report['statements'][missing_type] = 'Found by LLM'
-                        break
+        base_context = {
+            'symbol': filing_meta.get('symbol'),
+            'form_type': filing_meta.get('form_type'),
+            'date_filed': filing_meta.get('date_filed'),
+            'period_end_date': period_end_date,
+            'table_counter': [0]
+        }
+        
+        # --- ROUTING LOGIC ---
+        filing_index = extract_filing_index(soup)
+        
+        guided_scrape_successful = False
+        if filing_index:
+            guided_scrape_successful = process_guided_scrape(filing_index, soup, base_context, terms_dict, file_data_points, status_report)
+        
+        # If the ToC path was not attempted or did not succeed, use the fallback method
+        if not guided_scrape_successful:
+            find_and_scrape_financial_statements_fallback(soup, base_context, terms_dict, file_data_points, status_report)
 
         logging.info(f"[PID {os.getpid()}] Finished {os.path.basename(filepath)}, found {len(file_data_points)} data points.")
-        return file_data_points, status_report, base_context['missing_units_counter'][0]
+        return file_data_points, status_report
+
     except Exception as e:
-        logging.error(f"Error processing {os.path.basename(filepath)}: {e}", exc_info=True)
-        return [], status_report, 0
+        logging.error(f"An unexpected error occurred while processing {os.path.basename(filepath)}: {e}", exc_info=True)
+        return [], status_report

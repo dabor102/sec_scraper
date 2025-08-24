@@ -61,10 +61,10 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
     with ProcessPoolExecutor(max_workers=None) as executor:
         results = list(executor.map(worker_func, downloaded_files_info))
 
-    for result_data, report, missing_units in results:
+    for result_data, report in results:
         if result_data: all_data_points.extend(result_data)
         filing_reports.append(report)
-        total_missing_units += missing_units
+       #total_missing_units += missing_units
     
     # STAGE 3: Reporting
     print("\n" + "="*70)
@@ -89,10 +89,10 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
 
 def main():
     """Main function to configure and initiate scraping."""
-    symbol = 'UNH'
+    symbol = 'SNOW'
     start_year = 2025 
     end_year = 2023
-    form_groups = ['10-K', '10-Q']
+    form_groups = ['Annual Reports', 'Quarterly Reports']
     filing_urls_to_scrape = [] 
 
     final_df = scrape_sec_filings(
