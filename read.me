@@ -1,0 +1,185 @@
+SEC Financial Filings Scraper
+🤖 Project Overview for LLMs
+This repository contains a sophisticated, multi-stage Python application designed to scrape financial data from SEC filings. The primary goal is to extract structured financial data (from Income Statements, Balance Sheets, and Cash Flow Statements) for a specific company ticker symbol over a defined period.
+
+The application is engineered for robustness and efficiency, employing asynchronous downloads, parallel processing, and a dual-strategy parsing approach that leverages both structural document analysis and Large Language Model (LLM) intelligence. The final output is a clean, structured CSV file containing the extracted financial metrics.
+
+This README provides a detailed, component-by-component breakdown of the repository's architecture, logic, and data flow to enable a comprehensive understanding of its functionality.
+
+✨ Key Features
+Automated Metadata Fetching: Retrieves filing information directly from the NASDAQ API.
+
+Asynchronous Downloading: Utilizes aiohttp and asyncio to download multiple filing documents concurrently, significantly speeding up the data acquisition phase.
+
+Intelligent Parsing Engine:
+
+LLM-Powered ToC Analysis: Employs a primary strategy that parses the Table of Contents (ToC) and uses a Gemini-based LLM to intelligently identify the exact sections corresponding to the core financial statements. This is the preferred, high-accuracy method.
+
+Heuristic Fallback Mechanism: If ToC analysis fails, it reverts to a robust fallback system that scans all tables in the document, scores them against a comprehensive dictionary of financial terms, and identifies the most likely candidates for each statement.
+
+Parallel Processing: Leverages concurrent.futures.ProcessPoolExecutor to parse multiple downloaded filings in parallel, maximizing the use of available CPU cores.
+
+Structured Data Output: Aggregates all extracted data points into a Pandas DataFrame and exports it to a well-formatted CSV file.
+
+Advanced Logging: Implements a multiprocessing-safe logging system to provide detailed, real-time feedback on the scraping process across all parallel workers.
+
+⚙️ Workflow and Data Flow
+The application operates in a sequential, multi-stage pipeline.
+
+Initialization (main.py):
+
+The main function sets the target symbol, start_year, end_year, and form_groups (e.g., 'Quarterly Reports').
+
+It sets up a multiprocessing-safe logging queue and listener process to handle log messages from all child processes.
+
+Metadata Fetching (sec_api.py):
+
+The scrape_sec_filings function calls fetch_filing_metadata.
+
+This function queries the NASDAQ API (https://api.nasdaq.com/api/company/{symbol}/sec-filings) for each year and form group specified.
+
+It returns a list of dictionaries, where each dictionary (filings_meta_to_process) contains metadata for a single filing, including its url, form_type, and date_filed.
+
+Stage 1: Asynchronous Download (downloader.py):
+
+The download_all_filings function is called with the list of filing metadata.
+
+It uses aiohttp to create a pool of asynchronous workers.
+
+Each worker calls fetch_and_save, which downloads the HTML content of a filing URL.
+
+Files are saved locally with a standardized naming convention: {symbol}_{form_type}_{date}_{ref}.html.
+
+It returns a list of tuples, downloaded_files_info, containing the local filepath and the original metadata for each successfully downloaded filing.
+
+Stage 2: Parallel Processing (parser.py):
+
+A ProcessPoolExecutor is created to manage a pool of worker processes.
+
+The process_single_filing function is mapped to each item in downloaded_files_info. This is the core parsing function and runs in its own process.
+
+Inside process_single_filing:
+
+The HTML file is read and parsed with BeautifulSoup.
+
+The fiscal period end date is extracted from the document's text.
+
+Primary Strategy (ToC-Guided):
+
+extract_filing_index is called to find the Table of Contents.
+
+llm_analyzer.classify_toc_items is called. It sends the ToC descriptions to a Gemini LLM and asks it to map them to the required statement types (INCOME_STATEMENT, BALANCE_SHEET_STATEMENT, CASH_FLOW_STATEMENT).
+
+If successful, the parser isolates the HTML content for each identified financial statement section and calls scrape_data_from_tables only on the tables within that section.
+
+Fallback Strategy:
+
+If the ToC-guided approach fails (no ToC found or LLM fails to map), find_and_scrape_financial_statements_fallback is executed.
+
+This function iterates through all tables in the document, scores them based on keyword matches from financial_statement_terms.json, and selects the highest-scoring table for each financial statement type.
+
+scrape_data_from_tables is then called on these selected tables.
+
+The function returns a list of extracted data points and a status report.
+
+Stage 3: Aggregation and Reporting (main.py):
+
+The main process collects the results from all worker processes.
+
+All extracted all_data_points are consolidated.
+
+A detailed summary report is logged, showing which financial statements were successfully found for each filing.
+
+An overall accuracy score is calculated and logged.
+
+Stage 4: DataFrame Creation and Export (main.py):
+
+If data was extracted, it is loaded into a Pandas DataFrame.
+
+Columns are renamed and reordered to a final, clean schema.
+
+The DataFrame is saved to a CSV file (e.g., SNOW_financial_data_parallel.csv).
+
+📚 Module Descriptions
+main.py
+
+Purpose: The main orchestrator and entry point of the application.
+
+Key Functions:
+
+main(): Configures the scraping parameters (symbol, years, etc.), sets up the multiprocessing logging, and calls the main scraping function.
+
+scrape_sec_filings(): Manages the high-level workflow: calls metadata fetching, downloading, parallel processing, and handles the final data aggregation and CSV export.
+
+listener_process(): A dedicated process that listens for and handles log records from the main and worker processes.
+
+sec_api.py
+
+Purpose: Handles all interaction with the NASDAQ API to fetch filing metadata.
+
+Key Function:
+
+fetch_filing_metadata(): Constructs and sends requests to the NASDAQ API to get a list of filings.
+
+downloader.py
+
+Purpose: Manages the high-performance, asynchronous downloading of filing documents.
+
+Key Functions:
+
+download_all_filings(): The main async function that sets up the aiohttp session and gathers the download tasks.
+
+fetch_and_save(): The coroutine responsible for downloading a single URL and writing its content to a local HTML file. It also skips downloads for files that already exist locally.
+
+parser.py
+
+Purpose: The core data extraction and parsing engine. Contains the logic to read HTML files and extract structured financial data from tables.
+
+Key Functions:
+
+process_single_filing(): The main worker function that is executed in parallel for each filing. It orchestrates the entire parsing process for a single file, from reading the HTML to deciding which parsing strategy to use.
+
+process_guided_scrape(): Implements the primary, ToC-guided scraping logic by leveraging the LLM classification of ToC items.
+
+find_and_scrape_financial_statements_fallback(): Implements the fallback logic by scoring all tables in the document against keyword lists.
+
+scrape_data_from_tables(): The low-level function that iterates through the rows of a given HTML table, identifies metric names and values, and extracts them.
+
+parse_table_headers() and find_table_units(): Utility functions to extract critical context like fiscal years and monetary units (e.g., "in thousands") from the table headers and surrounding text.
+
+llm_analyzer.py
+
+Purpose: Interfaces with the Google Gemini Pro API to provide LLM-driven classification capabilities.
+
+Key Functions:
+
+classify_toc_items(): Takes a list of Table of Contents descriptions, constructs a detailed prompt, and asks the LLM to return a JSON object mapping the descriptions to the predefined financial statement types. This is the key function for the primary parsing strategy.
+
+get_llm_classification(): A simpler function designed to classify a single HTML table.
+
+financial_statement_terms.json
+
+Purpose: A configuration file containing a structured dictionary of keywords and phrases.
+
+Structure: The JSON is organized by financial statement type (e.g., INCOME_STATEMENT). Under each statement, it lists common terms and their variations (e.g., "Revenue / Sales" can be "net revenue", "sales", etc.).
+
+Usage: This file is critical for the fallback parsing mechanism in parser.py. The find_and_scrape_financial_statements_fallback function uses these terms to score tables and determine which one is most likely the Income Statement, Balance Sheet, etc.
+
+🚀 How to Run
+Set Environment Variable: The application requires a Google Gemini API key. You must set this as an environment variable:
+
+export GEMINI_API_KEY="YOUR_API_KEY"
+
+Configure Parameters: Open main.py and modify the variables in the main() function to set the desired company, time period, and report types:
+
+symbol = 'SNOW'
+start_year = 2025
+end_year = 2024
+form_groups = ['Quarterly Reports'] # Or ['Annual Reports']
+
+Execute the Script: Run the main file from your terminal:
+
+python main.py
+
+The script will create a directory (e.g., sec_filings_SNOW), download the HTML filings into it, and, upon successful completion, generate a CSV file (e.g., SNOW_financial_data_parallel.csv) in the root directory.
+
