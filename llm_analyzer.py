@@ -19,6 +19,54 @@ try:
 except Exception as e:
     logging.warning(f"Could not configure Gemini API. LLM features will be disabled. Error: {e}")
 
+def validate_financial_toc(toc_descriptions, statement_types):
+    """
+    Uses an LLM to validate if a list of ToC descriptions likely contains all required financial statements.
+    """
+    if not GEMINI_CONFIGURED:
+        logging.warning("Gemini not configured, cannot validate ToC.")
+        return False
+
+    prompt = f"""
+You are an expert financial analyst. Your task is to determine if a given Table of Contents (ToC) is a specific "Index to Financial Statements".
+
+A ToC is considered a valid "Index to Financial Statements" ONLY IF it contains clear references to ALL THREE of the following statement types:
+{json.dumps(statement_types, indent=2)}
+
+Analyze the list of "Available ToC Descriptions" below. Based on your analysis, decide if it meets the condition.
+
+Available ToC Descriptions:
+{json.dumps(toc_descriptions, indent=2)}
+
+Respond with a single JSON object ONLY, in the format: {{"is_complete_financial_toc": boolean}}
+- Set `is_complete_financial_toc` to `true` if you are confident that entries for all three required statement types are present.
+- Set `is_complete_financial_toc` to `false` otherwise.
+"""
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+
+        # Robustly find the JSON object in the response
+        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        if not json_match:
+            logging.error(f"LLM validator did not return a valid JSON object. Response: {response.text}")
+            return False
+
+        result = json.loads(json_match.group(0))
+        is_complete = result.get("is_complete_financial_toc", False)
+
+        if is_complete:
+            logging.info("LLM validated this ToC as a complete financial index.")
+        else:
+            logging.info("LLM did not validate this ToC as a complete financial index.")
+
+        return is_complete
+
+    except Exception as e:
+        logging.error(f"Error during LLM ToC validation: {e}")
+        return False
+
+
 
 def get_llm_classification(table_obj, potential_statement_type, all_keywords):
     """
