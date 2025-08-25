@@ -7,8 +7,8 @@ import json
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import multiprocessing
+import os
 
-# Import functions from our new modules
 from sec_api import fetch_filing_metadata
 from downloader import download_all_filings
 from parser import process_single_filing
@@ -29,13 +29,66 @@ def listener_process(queue, configurer):
     while True:
         try:
             record = queue.get()
-            if record is None:  # We send this as a sentinel to tell the listener to quit.
+            if record is None:
                 break
             logger.handle(record)
         except Exception:
             import sys, traceback
             print('Whoops! Problem:', file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
+
+def report_token_usage_and_cost(filing_reports):
+    """Calculates and logs the token usage and estimated cost for the scrape."""
+    logger = logging.getLogger()
+    
+    # Pricing for Gemini 1.5 Flash (per 1 million tokens)
+    PRICING = {
+        'standard': {'input': 0.075, 'output': 0.30},
+        'large_context': {'input': 0.15, 'output': 0.60}
+    }
+    TOKEN_THRESHOLD = 128000
+
+    total_input = 0
+    total_output = 0
+    total_cost = 0.0
+
+    logger.info("\n" + "="*80)
+    logger.info("--- API Usage and Cost Estimation Summary ---")
+    
+    # Header for the summary table
+    logger.info(f"{'Filename':<50} | {'Input Tokens':>15} | {'Output Tokens':>15} | {'Total Tokens':>15} | {'Est. Cost (USD)':>18}")
+    logger.info("-" * 120)
+
+    for report in filing_reports:
+        filepath = report.get('filepath', 'Unknown File')
+        token_counts = report.get('tokens', {'input': 0, 'output': 0})
+        
+        input_tokens = token_counts.get('input', 0)
+        output_tokens = token_counts.get('output', 0)
+        total_tokens = input_tokens + output_tokens
+
+        # Determine pricing tier and calculate cost
+        if input_tokens > TOKEN_THRESHOLD:
+            logger.warning(f"Note: Input for {filepath} exceeded 128k tokens, using higher pricing tier.")
+            input_cost = (input_tokens / 1_000_000) * PRICING['large_context']['input']
+            output_cost = (output_tokens / 1_000_000) * PRICING['large_context']['output']
+        else:
+            input_cost = (input_tokens / 1_000_000) * PRICING['standard']['input']
+            output_cost = (output_tokens / 1_000_000) * PRICING['standard']['output']
+        
+        file_cost = input_cost + output_cost
+
+        total_input += input_tokens
+        total_output += output_tokens
+        total_cost += file_cost
+        
+        logger.info(f"{filepath:<50} | {input_tokens:>15,} | {output_tokens:>15,} | {total_tokens:>15,} | ${file_cost:>17.6f}")
+
+    logger.info("-" * 120)
+    grand_total_tokens = total_input + total_output
+    logger.info(f"{'TOTALS':<50} | {total_input:>15,} | {total_output:>15,} | {grand_total_tokens:>15,} | ${total_cost:>17.6f}")
+    logger.info("="*80)
+
 
 def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, save_dir, log_queue):
     """
@@ -53,18 +106,14 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
         filings_meta_to_process = fetch_filing_metadata(symbol, start_year, end_year, form_groups)
 
     if not filings_meta_to_process:
-        logger.warning("No filings found to process. Exiting.")
         return None
 
-    # STAGE 1: Asynchronous Download
     logger.info(f"\n--- STAGE 1: Starting Asynchronous Download of {len(filings_meta_to_process)} filings ---")
     downloaded_files_info = asyncio.run(download_all_filings(filings_meta_to_process, save_dir))
     
     if not downloaded_files_info:
-        logger.warning("No files were downloaded or found locally. Cannot proceed.")
         return None
 
-    # STAGE 2: Parallel Processing
     logger.info(f"\n--- STAGE 2: Starting Parallel Processing of {len(downloaded_files_info)} files ---")
     
     with open('financial_statement_terms.json', 'r', encoding='utf-8') as f:
@@ -78,36 +127,38 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
     with ProcessPoolExecutor(max_workers=None) as executor:
         results = list(executor.map(worker_func, downloaded_files_info))
 
-    for result_data, report in results:
+    for result_data, report, token_counts in results:
         if result_data: all_data_points.extend(result_data)
+        # Attach token counts to the report for the summary
+        report['tokens'] = token_counts
         filing_reports.append(report)
     
-    # STAGE 3: Reporting
     logger.info("\n" + "="*70)
     logger.info("Scraping and Processing Complete.")
     
-    # *** NEW DETAILED SUMMARY LOGGING ***
     logger.info("--- Detailed Filing Summary ---")
     for report in filing_reports:
         filepath = report.get('filepath', 'Unknown File')
         statements = report.get('statements', {})
-        found = [s_type for s_type, status in statements.items() if status != 'Missing']
+        found = [s_type for s_type, status in statements.items() if status != 'Missing' and 'Failed' not in status]
         missing = [s_type for s_type, status in statements.items() if status == 'Missing']
-        
+        failed = [s_type for s_type, status in statements.items() if 'Failed' in status]
+
         summary_message = f"File: {filepath} | Found {len(found)}/3 statements."
-        if missing:
-            summary_message += f" (Missing: {', '.join(missing)})"
+        if missing: summary_message += f" (Missing: {', '.join(missing)})"
+        if failed: summary_message += f" (Failed on: {', '.join(failed)})"
         
         logger.info(summary_message)
     logger.info("-----------------------------")
 
-    successful_filings = sum(1 for r in filing_reports if all(s != 'Missing' for s in r['statements'].values()))
+    successful_filings = sum(1 for r in filing_reports if all(s != 'Missing' and 'Failed' not in s for s in r['statements'].values()))
     accuracy = (successful_filings / len(downloaded_files_info)) * 100 if downloaded_files_info else 0
     logger.info(f"Overall Accuracy: {successful_filings}/{len(downloaded_files_info)} filings ({accuracy:.2f}%) successfully scraped.")
 
-    # STAGE 4: DataFrame Creation
+    # --- NEW: Cost and Token Reporting ---
+    report_token_usage_and_cost(filing_reports)
+
     if not all_data_points:
-        logger.warning("No financial data was extracted.")
         return None
 
     df = pd.DataFrame(all_data_points)
@@ -120,20 +171,18 @@ def scrape_sec_filings(symbol, start_year, end_year, form_groups, filing_urls, s
 
 def main():
     """Main function to configure and initiate scraping."""
-    symbol = 'SNOW'
+    symbol = 'FTNT'
     start_year = 2025 
-    end_year = 2024
-    form_groups = ['Quarterly Reports'] #'Annual Reports',  
+    end_year = 2015
+    form_groups = ['Quarterly Reports']
     filing_urls_to_scrape = [] 
 
-    # --- Use a Manager to create a shareable queue ---
     with multiprocessing.Manager() as manager:
         log_queue = manager.Queue(-1)
         
         listener = multiprocessing.Process(target=listener_process, args=(log_queue, listener_configurer))
         listener.start()
 
-        # Configure the main process logger
         h = logging.handlers.QueueHandler(log_queue)
         root = logging.getLogger()
         root.addHandler(h)
@@ -153,11 +202,9 @@ def main():
             output_filename = f"{symbol.upper()}_financial_data_parallel.csv"
             final_df.to_csv(output_filename, index=False, encoding='utf-8')
             root.info(f"Successfully exported data to {output_filename}")
-            print(f"\nSample of the final DataFrame:\n{final_df.head()}")
         else:
             root.warning("No data was scraped, CSV file not created.")
             
-        # --- SHUTDOWN LOGGING ---
         log_queue.put_nowait(None)
         listener.join()
 
